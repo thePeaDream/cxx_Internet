@@ -15,6 +15,7 @@
 class UdpServer
 {
 public:
+    //0.0.0.0表示任意ip地址绑定
     UdpServer(uint16_t port,std::string ip = "0.0.0.0")
     :_port(port)
     ,_ip(ip)
@@ -57,7 +58,7 @@ public:
         //所以一定要互相转换 点分十进制字符串风格的ip<->网络字节序的4字节ip
         //当要进行网络发送时，将点分十进制ip转换成4字节ip；当读取网络里的ip时，4字节ip要转成点分十进制ip字符串
         //先将点分十进制风格的Ip -> 4字节ip,再将4字节主机序列->网络序列 
-        server_addr.sin_addr.s_addr = inet_addr(_ip.c_str());
+        server_addr.sin_addr.s_addr = INADDR_ANY;//inet_addr(_ip.c_str());
         //(7)bind(int sockfd,const struct sockaddr* addr,socklent_t addrlen)
         if(bind(_sock,(struct sockaddr*)&server_addr,sizeof(server_addr)) < 0)
         {
@@ -103,7 +104,7 @@ public:
                 std::string peerIp = inet_ntoa(peer.sin_addr);
                 //端口从网络序列->主机序列
                 uint16_t peerPort = ntohs(peer.sin_port);
-                std::cerr << "成功接收数据："<<peerIp << "-"<<peerPort << "sent:"<<buffer << std::endl;
+                std::cerr << "[" << peerIp << "-"<<peerPort << "] sent: "<<buffer << std::endl;
             }   
             //3 写回数据
             //(1) 接口：ssize_t sendto(int sockfd,const void* buf,size_t len,int flags,const struct sockaddr*dest_addr,socklen_t addrlen)
