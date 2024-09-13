@@ -11,7 +11,10 @@
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
+#include <cstdio>
 #include <cstdlib>
+//哈希表容器将访问过服务器的用户记录下来，用于广播消息
+#include <unordered_map>
 class UdpServer
 {
 public:
@@ -78,57 +81,65 @@ public:
         while(true)
         {
             //1 读取数据
-            //(1)接口：ssize_t recvfrom(int sockfd,void*buf,size_t len,int flags,struct sockaddr *src_addr,socklen_t *addrlen);
-            //(2)参数解析：
-            //int sockfd:服务器进程绑定的套接字
-            //void* buf和size_t len:读取数据的用户层缓冲区及其大小
-            //返回值：本次实际读取的数据字节数
-            //flags:读取的方式，默认为0时，以阻塞方式读取
-            //后面2个参数都是输出型参数，提取客户端(发送方)的地址信息
-            //struct sockaddr *src_addr:发送方的ip和port信息（除了拿到数据，也想知道是谁给我发的消息——src_ip和src_port）
-            //socklen_t *addrlen：特殊输入输出型参数,输入时代表peer结构体的大小，输出时代表实际读到peer的大小
             struct sockaddr_in peer;//远端的地址信息
             socklen_t len = sizeof(peer);
             ssize_t s = recvfrom(_sock,buffer,sizeof(buffer)-1,0,
                                 (struct sockaddr*)&peer,&len);
-            uint16_t peerPort = ntohs(peer.sin_port);
-            std::string peerIp = inet_ntoa(peer.sin_addr);
             if(s < 0){
                 std::cerr << "读取数据recvfrom发生错误"<<std::endl;
                 exit(4);
             }
             else{
                 //2 分析和处理数据
-                //(1) 数据是什么
                 buffer[s] = '\0';
-                std::cout << "[" << peerIp << ":" << peerPort << "] send: " << buffer << std::endl;
-                //(2) 如果发过来的是一个命令，将执行结果返回
-                if(strcasestr(buffer,"rm") || strcasestr(buffer,"rmdir"))//忽略大小写查找子串，只要有rm就返回客户端坏人
+                //(1) 记录下访问服务器的用户
+                uint16_t peerPort = ntohs(peer.sin_port);
+                std::string peerIp = inet_ntoa(peer.sin_addr);
+                char key[64];
+                snprintf(key,sizeof(key),"[%s-%d]",peerIp.c_str(),peerPort);
+                auto it = _record.find(key);
+                if(it == _record.end())
                 {
-                    char comment[] = "坏人,不能乱删!!!";
-                    sendto(_sock,comment,strlen(comment),0,(struct sockaddr*)&peer,sizeof(peer));
-                    continue;
+                    std::cout << "add new user:"<< key <<std::endl;
+                    //用户不存在，添加到记录
+                    _record.insert({key,peer});
                 }
+                //(2)将发过来的信息推送给所有人
+                printf("%s send# %s\n",key,buffer);
+                for(auto& user:_record)
+                {
+                    std::cout << "推送信息给"<< user.first << std::endl;
+                    sendto(_sock,buffer,strlen(buffer),0,(struct sockaddr*)&(user.second),sizeof(sockaddr_in));
+                }
+                
+                //(2) 如果发过来的是一个命令，将执行结果返回
+                // if(strcasestr(buffer,"rm") || strcasestr(buffer,"rmdir"))//忽略大小写查找子串，只要有rm就返回客户端坏人
+                // {
+                //     char comment[] = "坏人,不能乱删!!!";
+                //     sendto(_sock,comment,strlen(comment),0,(struct sockaddr*)&peer,sizeof(peer));
+                //     continue;
+                // }
                 //FILE* popen(const char* command,const char* type)
                 //第一：执行传入的字符串->在底层建立pipe管道，再fork()出子进程，让子进程执行command命令(调用exec系列函数)
                 //第二：FILE*：可以将执行结果通过FILE*类型的指针进行读取
                 //例如：ls -l -a
-                FILE* pf = popen(buffer,"r");
-                if(pf == nullptr){
-                    std::cerr << "WARNING:" << "popen发生异常,命令执行失败" << std::endl;
-                    char err[] = "指令解析发生异常,请重试";
-                    sendto(_sock,err,strlen(err),0,(struct sockaddr*)&peer,sizeof(peer));
-                    continue;
-                }
-                char result[1024];
-                std::string cmd_echo;
-                while(fgets(result,sizeof(result)-1,pf) != nullptr)
-                {
-                    //执行结果拼到一个字符串
-                    cmd_echo += result;
-                }
-                //写回结果
-                sendto(_sock,cmd_echo.c_str(),cmd_echo.size(),0,(struct sockaddr*)&peer,sizeof(peer)); 
+                // FILE* pf = popen(buffer,"r");
+                // if(pf == nullptr){
+                //     std::cerr << "WARNING:" << "popen发生异常,命令执行失败" << std::endl;
+                //     char err[] = "指令解析发生异常,请重试";
+                //     sendto(_sock,err,strlen(err),0,(struct sockaddr*)&peer,sizeof(peer));
+                //     continue;
+                // }
+                // char result[1024];
+                // std::string cmd_echo;
+                // while(fgets(result,sizeof(result)-1,pf) != nullptr)
+                // {
+                //     //执行结果拼到一个字符串
+                //     cmd_echo += result;
+                // }
+                // //写回结果
+                // sendto(_sock,cmd_echo.c_str(),cmd_echo.size(),0,(struct sockaddr*)&peer,sizeof(peer)); 
+
             }   
         }
     }
@@ -143,6 +154,9 @@ private:
     std::string _ip;
     //创建的套接字
     int _sock;
+
+    //将所有访问服务器的人都记录下来，实现广播，一个人发消息给服务器，服务器把消息广播给 访问过服务器的所有人
+    std::unordered_map<std::string,struct sockaddr_in> _record;
 };
 
 #endif
