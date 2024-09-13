@@ -67,7 +67,7 @@ public:
             exit(3);
         }
         std::cerr<<"套接字绑定成功！！！"<<std::endl;
-        std::cerr<<"服务器初始化成功！！！"<<std::endl<<std::endl;
+        std::cerr<<"服务器初始化成功！！！"<<std::endl;
     }
     //启动服务器
     void startServer()
@@ -91,6 +91,8 @@ public:
             socklen_t len = sizeof(peer);
             ssize_t s = recvfrom(_sock,buffer,sizeof(buffer)-1,0,
                                 (struct sockaddr*)&peer,&len);
+            uint16_t peerPort = ntohs(peer.sin_port);
+            std::string peerIp = inet_ntoa(peer.sin_addr);
             if(s < 0){
                 std::cerr << "读取数据recvfrom发生错误"<<std::endl;
                 exit(4);
@@ -99,23 +101,35 @@ public:
                 //2 分析和处理数据
                 //(1) 数据是什么
                 buffer[s] = '\0';
-                //(2) 是谁发的
-                //将4字节网络序列ip地址 -> 点分十进制ip地址
-                std::string peerIp = inet_ntoa(peer.sin_addr);
-                //端口从网络序列->主机序列
-                uint16_t peerPort = ntohs(peer.sin_port);
-                std::cerr << "[" << peerIp << "-"<<peerPort << "] sent: "<<buffer << std::endl;
+                std::cout << "[" << peerIp << ":" << peerPort << "] send: " << buffer << std::endl;
+                //(2) 如果发过来的是一个命令，将执行结果返回
+                if(strcasestr(buffer,"rm") || strcasestr(buffer,"rmdir"))//忽略大小写查找子串，只要有rm就返回客户端坏人
+                {
+                    char comment[] = "坏人,不能乱删!!!";
+                    sendto(_sock,comment,strlen(comment),0,(struct sockaddr*)&peer,sizeof(peer));
+                    continue;
+                }
+                //FILE* popen(const char* command,const char* type)
+                //第一：执行传入的字符串->在底层建立pipe管道，再fork()出子进程，让子进程执行command命令(调用exec系列函数)
+                //第二：FILE*：可以将执行结果通过FILE*类型的指针进行读取
+                //例如：ls -l -a
+                FILE* pf = popen(buffer,"r");
+                if(pf == nullptr){
+                    std::cerr << "WARNING:" << "popen发生异常,命令执行失败" << std::endl;
+                    char err[] = "指令解析发生异常,请重试";
+                    sendto(_sock,err,strlen(err),0,(struct sockaddr*)&peer,sizeof(peer));
+                    continue;
+                }
+                char result[1024];
+                std::string cmd_echo;
+                while(fgets(result,sizeof(result)-1,pf) != nullptr)
+                {
+                    //执行结果拼到一个字符串
+                    cmd_echo += result;
+                }
+                //写回结果
+                sendto(_sock,cmd_echo.c_str(),cmd_echo.size(),0,(struct sockaddr*)&peer,sizeof(peer)); 
             }   
-            //3 写回数据
-            //(1) 接口：ssize_t sendto(int sockfd,const void* buf,size_t len,int flags,const struct sockaddr*dest_addr,socklen_t addrlen)
-            //(2) 参数解析：
-            //int sockfd:绑定的套接字
-            //const void* buf和size_t len:发送的数据缓冲区以及字节大小
-            //flags:0
-            //const struct sockaddr* dest_addr:发送给某台主机，该主机的地址信息
-            //socklen_t addrlen:这个目标主机地址信息的结构体大小
-            sendto(_sock,buffer,strlen(buffer),0,
-                    (struct sockaddr*)&peer,sizeof(peer)); 
         }
     }
     ~UdpServer(){

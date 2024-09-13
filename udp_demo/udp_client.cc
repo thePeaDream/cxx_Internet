@@ -4,6 +4,7 @@ using namespace std;
 //使用手册：用static修饰，只在本文件可见
 static void usage(const string& proc)
 {
+    //发送命令，返回命令执行结果
     cout << "Usage:"<< proc << " targetIp targetPort"<<endl;
 }
 

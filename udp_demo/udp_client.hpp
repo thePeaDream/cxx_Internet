@@ -47,7 +47,7 @@ public:
         bzero(&peer,sizeof(peer));
         //填充服务器的sockaddr_in
         peer.sin_family = PF_INET;
-        peer.sin_addr.s_addr = inet_addr(_targetIp.c_str());
+        peer.sin_addr.s_addr = inet_addr(_targetIp.c_str()); 
         peer.sin_port = htons(_targetPort);
         //客户端向服务器发消息
         while(true)
