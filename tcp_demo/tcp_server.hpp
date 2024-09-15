@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
+#include <memory>
 #include <iostream>
 #include <string>
 #include <unistd.h>
@@ -14,11 +15,27 @@
 #include <sys/wait.h>
 #include <signal.h> //信号忽略
 #include <unistd.h>
+#include <pthread.h>
 using std::cout;
 using std::cin;
 using std::endl;
 using std::cerr;
-class TcpServer{
+//多线程版本 线程回调函数 参数
+class TcpServerServiceThreadArgs
+{
+public:
+    TcpServerServiceThreadArgs(int serviceSock,uint16_t clientPort,const std::string& clientIp)
+    :_serviceSock(serviceSock)
+    ,_clientPort(clientPort)
+    ,_clientIp(clientIp)
+    {}
+    int _serviceSock;
+    uint16_t _clientPort;
+    std::string _clientIp;
+};
+
+class TcpServer
+{
 private:
     int _listensock;
     std::string _ip;
@@ -61,7 +78,7 @@ public:
     }
     void StartServer()
     {
-        signal(SIGCHLD, SIG_IGN);//子进程退出时，会向父进程发送SIGCHLD信号，主动忽略——子进程退出时会自动释放自己的僵尸状态
+        //signal(SIGCHLD, SIG_IGN);//子进程退出时，会向父进程发送SIGCHLD信号，主动忽略——子进程退出时会自动释放自己的僵尸状态
         //4 获取连接,没人来连接就会阻塞 
         //int accept(int sockfd,struct sockaddr* client,socklent* addrlen)
         struct sockaddr_in client;
@@ -82,37 +99,64 @@ public:
             uint16_t clientPort = ntohs(client.sin_port);
             std::string clientIp = inet_ntoa(client.sin_addr);
             cerr << "连接成功,当前连接:"<<"["<<clientIp<<":"<<clientPort<<"]"<< "#"<< serviceSock << endl;
+
+            //version 3 --多线程版
+            pthread_t tid;
+            TcpServerServiceThreadArgs* args=new TcpServerServiceThreadArgs(serviceSock,clientPort,clientIp);
+            //线程创建成功一定是参数传成功了，如果args不在堆上开空间，可能线程还没运行，args内部参数又被改变了，线程不安全，传的参数尽量在堆上开空间
+            pthread_create(&tid,nullptr,serviceThread,(void*)args);
+
+            
+            //version 2.1 --多进程版 不采用忽略SIGCHLD
+            // pid_t id = fork();
+            // //子进程内部：父进程比子进程先退出，导致孙子进程是孤儿进程，由系统1号进程领养回收资源
+            // if(id == 0)
+            // {
+            //     close(_listensock);
+            //     //子进程立刻退出
+            //     if(fork() > 0)
+            //          exit(0);
+            //     //孙子进程（孤儿进程）
+            //     service(serviceSock,clientPort,clientIp);
+            //     exit(0);
+            // }
+            // //父进程可以立刻进程等待 回收子进程
+            // waitpid(id,nullptr,0);
+            // close(serviceSock);
+
             //version 1 -- 单进程循环版 -- 只能一次处理一个客户端，处理完一个，才能处理下一个，不能使用
             //service(serviceSock,clientPort,clientIp);
+            
             //version 2 -- 多进程版
             //创建子进程，让子进程给新的连接提供服务，子进程能不能打开父进程曾经打开的文件fd呢？
-            //能，子进程会继承父进程的文件描述符表！！！！
-            pid_t id = fork();
-            assert(id!=-1);
-            if(id == 0)
-            {
-                //子进程 会继承父进程打开的文件和fd，子进程不需要知道监听socket，尽量让进程关闭掉不需要的套接字
-                close(_listensock);
-                service(serviceSock,clientPort,clientIp);
-                exit(0);
-            }
-            //父进程只保留_listenSock即可,如果不关闭serviceSock,可用的文件描述符会越来越少
-            close(serviceSock);
+            //能，子进程会继承父进程的文件描述符表！！！！      
+            // pid_t id = fork();
+            // assert(id!=-1);
+            // if(id == 0)
+            // {
+            //     //子进程 会继承父进程打开的文件和fd，子进程不需要知道监听socket，尽量让进程关闭掉不需要的套接字
+            //     close(_listensock);
+            //     service(serviceSock,clientPort,clientIp);
+            //     exit(0);
+            // }
+            // //父进程只保留_listenSock即可,如果不关闭serviceSock,可用的文件描述符会越来越少
+            // close(serviceSock);
         }
     }
     //连接成功后的服务逻辑
-    void service(int sock,uint16_t clientPort,const std::string& clientIp)
+    static void service(int serviceSock,uint16_t clientPort,const std::string& clientIp)
     {
         char buffer[1024];
         //write 和 read可以直接被使用！！！
         //读取客户端发送数据
         while(true)
         {
-            ssize_t s = read(sock,buffer,sizeof(buffer));
+            ssize_t s = read(serviceSock,buffer,sizeof(buffer)-1);
+            cerr << "线程读取完成"<<endl;
             if(s>0)
             {
                 buffer[s] = 0;
-                cout << clientIp<<":"<<clientPort<<"# "<<buffer;
+                cout << clientIp<<":"<<clientPort<<"# "<<buffer << endl;
             }
             else if(s == 0)//对端关闭连接
             {
@@ -123,8 +167,18 @@ public:
                 cerr << "读取套接字信息发生错误,本次连接终止！！！"<<endl;
                 break;
             }
-            write(sock,buffer,strlen(buffer));
+            write(serviceSock,buffer,strlen(buffer));
         }
+    }
+    static void* serviceThread(void* args)
+    {
+        //线程分离，主线程不需要等待释放该线程资源
+        pthread_detach(pthread_self());
+        TcpServerServiceThreadArgs* tdArgs = static_cast<TcpServerServiceThreadArgs*>(args);
+        service(tdArgs->_serviceSock,tdArgs->_clientPort,tdArgs->_clientIp);
+        close(tdArgs->_serviceSock);
+        delete tdArgs;
+        return nullptr;
     }
     ~TcpServer()
     {
